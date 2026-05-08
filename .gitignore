@@ -1,0 +1,17 @@
+# Foundry
+out/
+cache/
+broadcast/
+
+# Dependencies (installed via `forge install`)
+lib/
+
+# Editor / system
+.vscode/
+.idea/
+.DS_Store
+
+# Local env (deploy keys, RPC URLs, etc.)
+.env
+.env.*
+!.env.example
