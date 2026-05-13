@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {PDFactory} from "../src/PDFactory.sol";
-import {PDCollection} from "../src/PDCollection.sol";
+import {PDProject} from "../src/PDProject.sol";
 
 contract PDFactoryTest is Test {
     PDFactory factory;
@@ -28,9 +28,9 @@ contract PDFactoryTest is Test {
         chunks[0] = bytes("function draw(p5) { p5.background(0); }");
     }
 
-    function _createSampleCollection(address _artist) internal returns (address collection) {
+    function _createSampleProject(address _artist) internal returns (address project) {
         vm.prank(_artist);
-        collection = factory.createCollection("Kiki", "KIKI", 2222, 0.011 ether, _sampleScript());
+        project = factory.createProject("Kiki", "KIKI", 2222, 0.011 ether, _sampleScript());
     }
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -86,63 +86,63 @@ contract PDFactoryTest is Test {
         assertFalse(factory.whitelistedArtists(artist));
     }
 
-    // ─── Create Collection ───────────────────────────────────────────────
+    // ─── Create Project ──────────────────────────────────────────────────
 
-    function test_CreateCollection_RevertsIfNotWhitelisted() public {
+    function test_CreateProject_RevertsIfNotWhitelisted() public {
         vm.prank(artist);
         vm.expectRevert(PDFactory.ArtistNotWhitelisted.selector);
-        factory.createCollection("Kiki", "KIKI", 2222, 0.011 ether, _sampleScript());
+        factory.createProject("Kiki", "KIKI", 2222, 0.011 ether, _sampleScript());
     }
 
-    function test_CreateCollection_RevertsOnZeroSupply() public {
+    function test_CreateProject_RevertsOnZeroSupply() public {
         vm.prank(admin);
         factory.whitelistArtist(artist);
 
         vm.prank(artist);
         vm.expectRevert(PDFactory.MaxSupplyZero.selector);
-        factory.createCollection("Kiki", "KIKI", 0, 0.011 ether, _sampleScript());
+        factory.createProject("Kiki", "KIKI", 0, 0.011 ether, _sampleScript());
     }
 
-    function test_CreateCollection_RevertsOnSupplyAboveCap() public {
+    function test_CreateProject_RevertsOnSupplyAboveCap() public {
         vm.prank(admin);
         factory.whitelistArtist(artist);
 
         vm.prank(artist);
         vm.expectRevert(PDFactory.MaxSupplyExceeded.selector);
-        factory.createCollection("Kiki", "KIKI", 10_001, 0.011 ether, _sampleScript());
+        factory.createProject("Kiki", "KIKI", 10_001, 0.011 ether, _sampleScript());
     }
 
-    function test_CreateCollection_RevertsOnNoScript() public {
+    function test_CreateProject_RevertsOnNoScript() public {
         vm.prank(admin);
         factory.whitelistArtist(artist);
 
         bytes[] memory empty = new bytes[](0);
         vm.prank(artist);
         vm.expectRevert(PDFactory.NoScriptData.selector);
-        factory.createCollection("Kiki", "KIKI", 2222, 0.011 ether, empty);
+        factory.createProject("Kiki", "KIKI", 2222, 0.011 ether, empty);
     }
 
-    function test_CreateCollection_Success() public {
+    function test_CreateProject_Success() public {
         vm.prank(admin);
         factory.whitelistArtist(artist);
 
-        address collection = _createSampleCollection(artist);
-        assertTrue(collection != address(0));
-        assertTrue(factory.isCollection(collection));
-        assertEq(factory.collectionCount(), 1);
-        assertEq(factory.artistCollectionCount(artist), 1);
-        assertEq(factory.getArtistCollections(artist)[0], collection);
+        address project = _createSampleProject(artist);
+        assertTrue(project != address(0));
+        assertTrue(factory.isProject(project));
+        assertEq(factory.projectCount(), 1);
+        assertEq(factory.artistProjectCount(artist), 1);
+        assertEq(factory.getArtistProjects(artist)[0], project);
     }
 
-    function test_CreateCollection_SupplyAtCapWorks() public {
+    function test_CreateProject_SupplyAtCapWorks() public {
         // Exactly 10k is allowed; the error fires above the cap.
         vm.prank(admin);
         factory.whitelistArtist(artist);
 
         vm.prank(artist);
-        address collection =
-            factory.createCollection("Max", "MAX", 10_000, 0.01 ether, _sampleScript());
-        assertTrue(collection != address(0));
+        address project =
+            factory.createProject("Max", "MAX", 10_000, 0.01 ether, _sampleScript());
+        assertTrue(project != address(0));
     }
 
     // ─── Cooldown ────────────────────────────────────────────────────────
@@ -155,40 +155,40 @@ contract PDFactoryTest is Test {
         vm.prank(admin);
         factory.whitelistArtist(artist);
 
-        _createSampleCollection(artist);
+        _createSampleProject(artist);
 
         // Immediate second deploy — should revert
         vm.prank(artist);
         vm.expectRevert(); // CooldownActive with data — using generic revert
-        factory.createCollection("Kiki2", "K2", 2222, 0.011 ether, _sampleScript());
+        factory.createProject("Kiki2", "K2", 2222, 0.011 ether, _sampleScript());
     }
 
     function test_Cooldown_AllowsDeployAfter60Days() public {
         vm.prank(admin);
         factory.whitelistArtist(artist);
 
-        _createSampleCollection(artist);
+        _createSampleProject(artist);
 
         // Warp forward 60 days + 1s
         vm.warp(block.timestamp + 60 days + 1);
 
-        address c2 = _createSampleCollection(artist);
+        address c2 = _createSampleProject(artist);
         assertTrue(c2 != address(0));
-        assertEq(factory.artistCollectionCount(artist), 2);
+        assertEq(factory.artistProjectCount(artist), 2);
     }
 
-    function test_Cooldown_IsGlobalPerArtist_NotPerCollection() public {
+    function test_Cooldown_IsGlobalPerArtist_NotPerProject() public {
         vm.startPrank(admin);
         factory.whitelistArtist(artist);
         vm.stopPrank();
 
-        _createSampleCollection(artist);
+        _createSampleProject(artist);
 
         // 59 days later still blocked
         vm.warp(block.timestamp + 59 days);
         vm.prank(artist);
         vm.expectRevert();
-        factory.createCollection("Kiki2", "K2", 2222, 0.011 ether, _sampleScript());
+        factory.createProject("Kiki2", "K2", 2222, 0.011 ether, _sampleScript());
     }
 
     function test_Cooldown_DoesNotAffectDifferentArtist() public {
@@ -197,28 +197,28 @@ contract PDFactoryTest is Test {
         factory.whitelistArtist(artist2);
         vm.stopPrank();
 
-        _createSampleCollection(artist);
+        _createSampleProject(artist);
         // Second artist can deploy immediately
-        address c2 = _createSampleCollection(artist2);
+        address c2 = _createSampleProject(artist2);
         assertTrue(c2 != address(0));
     }
 
-    function test_CanCreateCollection_View() public {
+    function test_CanCreateProject_View() public {
         // Not whitelisted
-        assertFalse(factory.canCreateCollection(artist));
+        assertFalse(factory.canCreateProject(artist));
 
         vm.prank(admin);
         factory.whitelistArtist(artist);
 
         // Whitelisted, no prior deploy
-        assertTrue(factory.canCreateCollection(artist));
+        assertTrue(factory.canCreateProject(artist));
 
-        _createSampleCollection(artist);
+        _createSampleProject(artist);
         // Whitelisted, on cooldown
-        assertFalse(factory.canCreateCollection(artist));
+        assertFalse(factory.canCreateProject(artist));
 
         vm.warp(block.timestamp + 60 days + 1);
-        assertTrue(factory.canCreateCollection(artist));
+        assertTrue(factory.canCreateProject(artist));
     }
 
     // ─── Admin Ops ───────────────────────────────────────────────────────
@@ -256,33 +256,33 @@ contract PDFactoryTest is Test {
 
     // ─── Withdraw ────────────────────────────────────────────────────────
 
-    function test_WithdrawFrom_NoOpOnEmptyCollection() public {
-        // Fix verified: withdrawing from a collection with 0 fees no longer reverts
+    function test_WithdrawFrom_NoOpOnEmptyProject() public {
+        // Fix verified: withdrawing from a Project with 0 fees no longer reverts
         vm.prank(admin);
         factory.whitelistArtist(artist);
-        address collection = _createSampleCollection(artist);
+        address project = _createSampleProject(artist);
 
         // No mints yet — no fees accumulated
         vm.prank(admin);
-        factory.withdrawFrom(collection); // must not revert
+        factory.withdrawFrom(project); // must not revert
     }
 
     function test_WithdrawFrom_SweepsFees() public {
         vm.prank(admin);
         factory.whitelistArtist(artist);
-        address collection = _createSampleCollection(artist);
+        address project = _createSampleProject(artist);
 
         // Mint 10 tokens at 0.011 ETH each = 0.11 ETH
         // Platform fee = 5% = 0.0055 ETH
         address buyer = makeAddr("buyer");
         vm.deal(buyer, 1 ether);
         vm.prank(buyer);
-        PDCollection(collection).mint{value: 0.11 ether}(10);
+        PDProject(project).mint{value: 0.11 ether}(10);
 
         uint256 platformBefore = platformWallet.balance;
 
         vm.prank(admin);
-        factory.withdrawFrom(collection);
+        factory.withdrawFrom(project);
 
         assertEq(platformWallet.balance, platformBefore + 0.0055 ether);
     }
@@ -293,16 +293,16 @@ contract PDFactoryTest is Test {
         factory.whitelistArtist(artist2);
         vm.stopPrank();
 
-        address c1 = _createSampleCollection(artist);
-        address c2 = _createSampleCollection(artist2);
+        address c1 = _createSampleProject(artist);
+        address c2 = _createSampleProject(artist2);
 
-        // Mint from both — 0.011 * 10 = 0.11 per collection, 5% platform = 0.0055 each
+        // Mint from both — 0.011 * 10 = 0.11 per Project, 5% platform = 0.0055 each
         address buyer = makeAddr("buyer");
         vm.deal(buyer, 10 ether);
         vm.prank(buyer);
-        PDCollection(c1).mint{value: 0.11 ether}(10);
+        PDProject(c1).mint{value: 0.11 ether}(10);
         vm.prank(buyer);
-        PDCollection(c2).mint{value: 0.11 ether}(10);
+        PDProject(c2).mint{value: 0.11 ether}(10);
 
         uint256 platformBefore = platformWallet.balance;
         vm.prank(admin);
@@ -314,9 +314,9 @@ contract PDFactoryTest is Test {
     function test_BatchWithdrawRange_ClampsEnd() public {
         vm.prank(admin);
         factory.whitelistArtist(artist);
-        _createSampleCollection(artist);
+        _createSampleProject(artist);
 
-        // Request end = 100 but only 1 collection exists — must not revert, just clamp
+        // Request end = 100 but only 1 Project exists — must not revert, just clamp
         vm.prank(admin);
         factory.batchWithdrawRange(0, 100);
     }
@@ -324,7 +324,7 @@ contract PDFactoryTest is Test {
     function test_BatchWithdrawRange_RevertsOnInvalidRange() public {
         vm.prank(admin);
         factory.whitelistArtist(artist);
-        _createSampleCollection(artist);
+        _createSampleProject(artist);
 
         vm.prank(admin);
         vm.expectRevert(PDFactory.InvalidRange.selector);
