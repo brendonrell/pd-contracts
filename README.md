@@ -32,15 +32,11 @@ forge build
 forge test
 ```
 
-`foundry.toml` ships with `via_ir = true` — required because `PDFactory` and `PDProject` hit stack-too-deep without it. Don't toggle it off.
+Built against `solc 0.8.24` with `via_ir = true` — `PDFactory` and `PDProject` hit stack-too-deep without it.
 
-## Status
+## Audit
 
-Compiled clean against `solc 0.8.24` with `via_ir = true`. Tests are first-pass: ~75 cases covering happy paths, access control, cooldown, paginated withdrawals, sheet purchasing, and EIP-2981 royalty math. Not yet exhaustive — multi-Project integration scenarios and cross-Project cooldown cases are tracked separately.
-
-Deploy scripts (`DeployFactory`, `DeployStickers`, `WhitelistArtist`) are not in this repo yet.
-
-A human audit is required before mainnet.
+Not audited. Do not deploy to mainnet without one.
 
 ## Layout
 
