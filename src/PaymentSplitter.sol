@@ -2,8 +2,8 @@
 pragma solidity ^0.8.24;
 
 /// @title PaymentSplitter
-/// @notice Minimal immutable 2-way royalty splitter for PD collections.
-///         Deployed once per collection by PDFactory. Receives secondary royalties
+/// @notice Minimal immutable 2-way royalty splitter for PD Projects.
+///         Deployed once per Project by PDFactory. Receives secondary royalties
 ///         via EIP-2981 and splits them 60/40 (artist/platform).
 ///         This maps to the overall 5% royalty as 3% artist / 2% platform.
 ///         No admin. No upgrades. Permanent.

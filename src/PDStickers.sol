@@ -234,7 +234,7 @@ contract PDStickers is ERC1155, IERC2981 {
             s.name,
             '","description":"Price Discussion Sticker","image":"data:image/svg+xml;base64,',
             svgBase64,
-            '","properties":{"collection":"Price Discussion","type":"sticker"}}'
+            '","properties":{"platform":"Price Discussion","type":"sticker"}}'
         );
 
         return string.concat(

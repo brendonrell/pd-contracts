@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {PDCollection} from "./PDCollection.sol";
+import {PDProject} from "./PDProject.sol";
 import {PaymentSplitter} from "./PaymentSplitter.sol";
 
 /// @title PDFactory
 /// @notice The deployer and registry for Price Discussion — a curated generative
 ///         art minting platform on Ethereum mainnet.
 ///
-///         Deploys PDCollection + PaymentSplitter pairs per artist drop.
+///         Deploys PDProject + PaymentSplitter pairs per artist drop.
 ///         Maintains the artist whitelist, enforces the 60-day cooldown,
 ///         and handles platform fee withdrawal.
 ///
@@ -16,10 +16,10 @@ import {PaymentSplitter} from "./PaymentSplitter.sol";
 contract PDFactory {
     // ─── Constants ───────────────────────────────────────────────────────
 
-    /// @notice 60-day cooldown between artist collection launches.
+    /// @notice 60-day cooldown between artist Project launches.
     uint256 public constant COOLDOWN_PERIOD = 60 days;
 
-    /// @notice Maximum editions per collection.
+    /// @notice Maximum Outputs per Project.
     uint256 public constant MAX_SUPPLY_CAP = 10_000;
 
     // ─── State ───────────────────────────────────────────────────────────
@@ -30,18 +30,18 @@ contract PDFactory {
     /// @notice Platform wallet — receives primary fees + platform royalty share.
     address public platformWallet;
 
-    /// @notice Base URI for token metadata. Collections delegate tokenURI() here.
-    ///         Updatable so metadata endpoint can migrate without redeploying collections.
+    /// @notice Base URI for token metadata. Projects delegate tokenURI() here.
+    ///         Updatable so metadata endpoint can migrate without redeploying Projects.
     string public baseTokenURI;
 
     mapping(address => bool) public whitelistedArtists;
-    mapping(address => uint256) public lastCollectionTimestamp;
+    mapping(address => uint256) public lastProjectTimestamp;
 
-    /// @notice All deployed collection addresses, in order of deployment.
-    address[] public collections;
+    /// @notice All deployed Project addresses, in order of deployment.
+    address[] public projects;
 
-    mapping(address => bool) public isCollection;
-    mapping(address => address[]) public artistCollections;
+    mapping(address => bool) public isProject;
+    mapping(address => address[]) public artistProjects;
 
     // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -57,8 +57,8 @@ contract PDFactory {
 
     // ─── Events ──────────────────────────────────────────────────────────
 
-    event CollectionCreated(
-        address indexed collection,
+    event ProjectCreated(
+        address indexed project,
         address indexed artist,
         address indexed splitter,
         string name,
@@ -71,8 +71,8 @@ contract PDFactory {
     event AdminTransferred(address indexed oldAdmin, address indexed newAdmin);
     event PlatformWalletUpdated(address indexed oldWallet, address indexed newWallet);
     event BaseTokenURIUpdated(string newURI);
-    event FeesWithdrawn(address indexed collection, address indexed to, uint256 amount);
-    event BatchFeesWithdrawn(address indexed to, uint256 total, uint256 collectionCount);
+    event FeesWithdrawn(address indexed project, address indexed to, uint256 amount);
+    event BatchFeesWithdrawn(address indexed to, uint256 total, uint256 projectCount);
 
     // ─── Modifiers ───────────────────────────────────────────────────────
 
@@ -95,18 +95,18 @@ contract PDFactory {
         baseTokenURI = _baseTokenURI;
     }
 
-    // ─── Collection Deployment ───────────────────────────────────────────
+    // ─── Project Deployment ──────────────────────────────────────────────
 
-    /// @notice Deploy a new generative art collection.
+    /// @notice Deploy a new generative art Project.
     ///         Only whitelisted artists. Enforces 60-day cooldown and 10k cap.
-    ///         Deploys both a PDCollection and its PaymentSplitter.
-    function createCollection(
+    ///         Deploys both a PDProject and its PaymentSplitter.
+    function createProject(
         string calldata name,
         string calldata symbol,
         uint256 maxSupply,
         uint256 mintPrice,
         bytes[] calldata scriptChunks
-    ) external returns (address collection) {
+    ) external returns (address project) {
         address artist = msg.sender;
 
         // ── Checks ──
@@ -118,16 +118,16 @@ contract PDFactory {
         // Cooldown: only meaningful after an artist's first deploy.
         // Explicit null check — works in all environments (including tests where
         // block.timestamp can be small).
-        uint256 lastTs = lastCollectionTimestamp[artist];
+        uint256 lastTs = lastProjectTimestamp[artist];
         if (lastTs != 0) {
             uint256 availableAt = lastTs + COOLDOWN_PERIOD;
             if (block.timestamp < availableAt) revert CooldownActive(availableAt);
         }
 
-        // ── Effects/Interactions: deploy splitter then collection ──
+        // ── Effects/Interactions: deploy splitter then Project ──
         PaymentSplitter splitter = new PaymentSplitter(artist, platformWallet);
 
-        PDCollection coll = new PDCollection(
+        PDProject proj = new PDProject(
             name,
             symbol,
             artist,
@@ -137,15 +137,15 @@ contract PDFactory {
             scriptChunks
         );
 
-        collection = address(coll);
+        project = address(proj);
 
-        lastCollectionTimestamp[artist] = block.timestamp;
-        collections.push(collection);
-        isCollection[collection] = true;
-        artistCollections[artist].push(collection);
+        lastProjectTimestamp[artist] = block.timestamp;
+        projects.push(project);
+        isProject[project] = true;
+        artistProjects[artist].push(project);
 
-        emit CollectionCreated(
-            collection,
+        emit ProjectCreated(
+            project,
             artist,
             address(splitter),
             name,
@@ -162,7 +162,7 @@ contract PDFactory {
         emit ArtistWhitelisted(artist);
     }
 
-    /// @notice Remove an artist. Does not affect already-deployed collections.
+    /// @notice Remove an artist. Does not affect already-deployed Projects.
     function removeArtist(address artist) external onlyAdmin {
         if (artist == address(0)) revert ZeroAddress(); // consistency with whitelistArtist
         whitelistedArtists[artist] = false;
@@ -171,35 +171,35 @@ contract PDFactory {
 
     // ─── Platform Fee Withdrawal ─────────────────────────────────────────
 
-    /// @notice Withdraw accumulated platform fees from a single collection.
+    /// @notice Withdraw accumulated platform fees from a single Project.
     ///         Uses balance delta (so pre-existing factory ETH isn't swept).
-    ///         PDCollection.withdraw() is a no-op when balance is zero — so
-    ///         this function doesn't revert on already-swept collections.
-    function withdrawFrom(address collection) external onlyAdmin {
+    ///         PDProject.withdraw() is a no-op when balance is zero — so
+    ///         this function doesn't revert on already-swept Projects.
+    function withdrawFrom(address project) external onlyAdmin {
         uint256 balanceBefore = address(this).balance;
-        PDCollection(collection).withdraw();
+        PDProject(project).withdraw();
         uint256 received = address(this).balance - balanceBefore;
 
         if (received > 0) {
             (bool success,) = platformWallet.call{value: received}("");
             if (!success) revert TransferFailed();
-            emit FeesWithdrawn(collection, platformWallet, received);
+            emit FeesWithdrawn(project, platformWallet, received);
         }
     }
 
-    /// @notice Paginated batch withdraw — sweeps [start, end) from the collections array.
+    /// @notice Paginated batch withdraw — sweeps [start, end) from the projects array.
     ///         Use this as the platform scales past the point where a full sweep
     ///         would exceed block gas. Range is clamped to array length.
     function batchWithdrawRange(uint256 start, uint256 end) external onlyAdmin {
-        uint256 len = collections.length;
+        uint256 len = projects.length;
         if (end > len) end = len;
         if (start >= end) revert InvalidRange();
 
         uint256 balanceBefore = address(this).balance;
 
         for (uint256 i = start; i < end;) {
-            // try/catch keeps this safe if a future collection ever misbehaves.
-            try PDCollection(collections[i]).withdraw() {} catch {}
+            // try/catch keeps this safe if a future Project ever misbehaves.
+            try PDProject(projects[i]).withdraw() {} catch {}
             unchecked { ++i; }
         }
 
@@ -211,14 +211,14 @@ contract PDFactory {
         }
     }
 
-    /// @notice Convenience sweep of every collection. Safe up to ~30-50 collections
+    /// @notice Convenience sweep of every Project. Safe up to ~30-50 Projects
     ///         before block gas becomes a concern; switch to batchWithdrawRange past that.
     function batchWithdraw() external onlyAdmin {
         uint256 balanceBefore = address(this).balance;
-        uint256 len = collections.length;
+        uint256 len = projects.length;
 
         for (uint256 i; i < len;) {
-            try PDCollection(collections[i]).withdraw() {} catch {}
+            try PDProject(projects[i]).withdraw() {} catch {}
             unchecked { ++i; }
         }
 
@@ -251,22 +251,22 @@ contract PDFactory {
 
     // ─── View Functions ──────────────────────────────────────────────────
 
-    function collectionCount() external view returns (uint256) {
-        return collections.length;
+    function projectCount() external view returns (uint256) {
+        return projects.length;
     }
 
-    function artistCollectionCount(address artist) external view returns (uint256) {
-        return artistCollections[artist].length;
+    function artistProjectCount(address artist) external view returns (uint256) {
+        return artistProjects[artist].length;
     }
 
-    /// @notice Full collection list for an artist — used by frontend profile pages.
-    function getArtistCollections(address artist) external view returns (address[] memory) {
-        return artistCollections[artist];
+    /// @notice Full Project list for an artist — used by frontend profile pages.
+    function getArtistProjects(address artist) external view returns (address[] memory) {
+        return artistProjects[artist];
     }
 
     /// @notice Seconds remaining on an artist's cooldown. Returns 0 if clear or never deployed.
     function cooldownRemaining(address artist) external view returns (uint256) {
-        uint256 lastTs = lastCollectionTimestamp[artist];
+        uint256 lastTs = lastProjectTimestamp[artist];
         if (lastTs == 0) return 0;
         uint256 availableAt = lastTs + COOLDOWN_PERIOD;
         if (block.timestamp >= availableAt) return 0;
@@ -274,15 +274,15 @@ contract PDFactory {
     }
 
     /// @notice Is artist whitelisted AND off cooldown right now?
-    function canCreateCollection(address artist) external view returns (bool) {
+    function canCreateProject(address artist) external view returns (bool) {
         if (!whitelistedArtists[artist]) return false;
-        uint256 lastTs = lastCollectionTimestamp[artist];
+        uint256 lastTs = lastProjectTimestamp[artist];
         if (lastTs == 0) return true;
         return block.timestamp >= lastTs + COOLDOWN_PERIOD;
     }
 
     // ─── Receive ─────────────────────────────────────────────────────────
 
-    /// @notice Accept ETH from collection withdrawals.
+    /// @notice Accept ETH from Project withdrawals.
     receive() external payable {}
 }
