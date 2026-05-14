@@ -51,6 +51,10 @@ contract PDProject is ERC721, IERC2981 {
     uint256 private constant BPS_DENOM = 10_000;
     uint256 private constant ROYALTY_BPS = 500;      // 5% total secondary (3/2 via splitter)
 
+    /// @notice Hard per-tx mint cap. Floor on grief vectors at the transaction
+    ///         level (the per-Project supply cap is the actual scarcity bound).
+    uint256 public constant MAX_MINT_PER_TX = 22;
+
     // ─── Oracle Constants ────────────────────────────────────────────────
 
     /// @dev Storage fee target: $2 USD-equivalent per mint.
@@ -105,6 +109,7 @@ contract PDProject is ERC721, IERC2981 {
     error IncorrectPayment();
     error MaxSupplyReached();
     error QuantityZero();
+    error QuantityExceedsTxCap();
     error TransferFailed();
     error TxidAlreadySet();
     error ZeroTxid();
@@ -167,6 +172,7 @@ contract PDProject is ERC721, IERC2981 {
     function mint(uint256 quantity) external payable {
         // ── Checks ──
         if (quantity == 0) revert QuantityZero();
+        if (quantity > MAX_MINT_PER_TX) revert QuantityExceedsTxCap();
         uint256 startingMinted = totalMinted;
         if (startingMinted + quantity > maxSupply) revert MaxSupplyReached();
 
@@ -277,30 +283,36 @@ contract PDProject is ERC721, IERC2981 {
         return 0;
     }
 
-    /// @dev Returns 18-decimal ETH/USD price from Uniswap V3 TWAP, or 0 on failure.
+    /// @dev Returns 18-decimal ETH/USD price from Uniswap V3 TWAP, or 0 on
+    ///      failure. Folds both the `consult` (which can revert if the pool
+    ///      lacks observation history) and the `getQuoteAtTick` math (which
+    ///      can revert on extreme-tick overflow) into a single external view
+    ///      so the surrounding try/catch boundary catches every internal
+    ///      revert and surfaces it cleanly as OracleFailed when the cascade
+    ///      reaches its bottom.
     function _tryUniswapTwap() internal view returns (uint256) {
-        IPDFactory f = IPDFactory(factory);
-        address pool = f.uniswapV3Pool();
-        address weth = f.weth();
-        address usdc = f.usdc();
+        address pool = IPDFactory(factory).uniswapV3Pool();
 
-        try this.peekTwapTick(pool) returns (int24 tick) {
-            // 1 WETH → ? USDC (USDC has 6 decimals)
-            uint256 usdcPer1Eth = OracleLibrary.getQuoteAtTick(tick, 1e18, weth, usdc);
-            if (usdcPer1Eth == 0) return 0;
-            return usdcPer1Eth * USDC_TO_18;
+        try this.peekUniswapEthUsdPrice18(pool) returns (uint256 price18) {
+            return price18;
         } catch {
             return 0;
         }
     }
 
-    /// @notice External wrapper used only by `_tryUniswapTwap` to make the
-    ///         OracleLibrary.consult call try/catch-able. Reverts naturally if
-    ///         the pool lacks sufficient observation history.
-    /// @dev    Marked external so it can be called via `this.` for the
-    ///         try/catch boundary. View-only — safe.
-    function peekTwapTick(address pool) external view returns (int24) {
-        return OracleLibrary.consult(pool, TWAP_WINDOW);
+    /// @notice External wrapper that performs the full Uniswap V3 TWAP read
+    ///         and quote math in one view call. Marked external so it can be
+    ///         called via `this.` for the try/catch boundary. View-only — safe.
+    /// @dev    Returns the 18-decimal ETH/USD price, or 0 if the pool quote is
+    ///         zero. Any internal revert (insufficient observations, extreme
+    ///         tick overflow in getQuoteAtTick, etc.) propagates out and is
+    ///         absorbed by the caller's try/catch.
+    function peekUniswapEthUsdPrice18(address pool) external view returns (uint256) {
+        IPDFactory f = IPDFactory(factory);
+        int24 tick = OracleLibrary.consult(pool, TWAP_WINDOW);
+        uint256 usdcPer1Eth = OracleLibrary.getQuoteAtTick(tick, 1e18, f.weth(), f.usdc());
+        if (usdcPer1Eth == 0) return 0;
+        return usdcPer1Eth * USDC_TO_18;
     }
 
     /// @notice Public view: current storage fee in wei. Frontend uses this to
@@ -344,13 +356,18 @@ contract PDProject is ERC721, IERC2981 {
         string memory imageField = _buildImageField(tokenId);
         string memory animationField = _buildAnimationField(tokenId);
 
+        // Defensive: the factory validates name + description against JSON-
+        // breaking characters at createProject time, so artist-supplied input
+        // should never reach here unescaped. We escape anyway — belt and
+        // suspenders. ERC721 `name()` reads back the constructor-stored value
+        // unchanged, so the same characters apply.
         bytes memory json = abi.encodePacked(
             '{"name":"',
-            name(),
+            _jsonEscape(name()),
             ' #',
             tokenId.toString(),
             '","description":"',
-            description,
+            _jsonEscape(description),
             '","image":"',
             imageField,
             '","animation_url":"',
@@ -364,6 +381,55 @@ contract PDProject is ERC721, IERC2981 {
             "data:application/json;base64,",
             Base64.encode(json)
         );
+    }
+
+    /// @dev JSON string-content escaper per RFC 8259 §7. Quotes and backslashes
+    ///      get their two-char escape; the common whitespace control codes get
+    ///      their short escape (\b, \t, \n, \f, \r); every other control byte
+    ///      and DEL (0x7F) becomes a \u00XX sequence. UTF-8 multibyte payload
+    ///      (>= 0x80) passes through verbatim.
+    function _jsonEscape(string memory input) internal pure returns (string memory) {
+        bytes memory data = bytes(input);
+        uint256 len = data.length;
+        // Worst case: every byte expands to a 6-char \u00XX sequence.
+        bytes memory out = new bytes(len * 6);
+        uint256 j;
+        for (uint256 i; i < len;) {
+            bytes1 b = data[i];
+            if (b == 0x22) {
+                out[j] = 0x5C; out[j + 1] = 0x22; j += 2;            // \"
+            } else if (b == 0x5C) {
+                out[j] = 0x5C; out[j + 1] = 0x5C; j += 2;            // \\
+            } else if (b == 0x08) {
+                out[j] = 0x5C; out[j + 1] = 0x62; j += 2;            // \b
+            } else if (b == 0x09) {
+                out[j] = 0x5C; out[j + 1] = 0x74; j += 2;            // \t
+            } else if (b == 0x0A) {
+                out[j] = 0x5C; out[j + 1] = 0x6E; j += 2;            // \n
+            } else if (b == 0x0C) {
+                out[j] = 0x5C; out[j + 1] = 0x66; j += 2;            // \f
+            } else if (b == 0x0D) {
+                out[j] = 0x5C; out[j + 1] = 0x72; j += 2;            // \r
+            } else if (uint8(b) < 0x20 || uint8(b) == 0x7F) {
+                uint8 hi = uint8(b) >> 4;
+                uint8 lo = uint8(b) & 0x0F;
+                out[j]     = 0x5C; // \
+                out[j + 1] = 0x75; // u
+                out[j + 2] = 0x30; // 0
+                out[j + 3] = 0x30; // 0
+                out[j + 4] = bytes1(hi < 10 ? hi + 0x30 : hi + 0x57); // 0-9 / a-f
+                out[j + 5] = bytes1(lo < 10 ? lo + 0x30 : lo + 0x57);
+                j += 6;
+            } else {
+                out[j] = b; j += 1;
+            }
+            unchecked { ++i; }
+        }
+        // Truncate the output bytes array to its true length.
+        assembly {
+            mstore(out, j)
+        }
+        return string(out);
     }
 
     function _buildImageField(uint256 tokenId) internal view returns (string memory) {

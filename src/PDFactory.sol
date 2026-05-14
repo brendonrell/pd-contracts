@@ -92,6 +92,7 @@ contract PDFactory {
     error MaxSupplyExceeded();
     error MaxSupplyZero();
     error NoScriptData();
+    error InvalidCharacter();
 
     // ─── Events ──────────────────────────────────────────────────────────
 
@@ -172,6 +173,14 @@ contract PDFactory {
         if (maxSupply > MAX_SUPPLY_CAP) revert MaxSupplyExceeded();
         if (scriptChunks.length == 0) revert NoScriptData();
 
+        // Reject any byte that would break the on-chain tokenURI JSON: control
+        // bytes (0x00-0x1F + 0x7F), double-quote (0x22), backslash (0x5C). The
+        // tokenURI builder also escapes defensively — this is the upstream
+        // half of belt-and-suspenders. UTF-8 multibyte characters (>= 0x80)
+        // pass through.
+        _assertJsonSafe(bytes(name));
+        _assertJsonSafe(bytes(description));
+
         // Cooldown: only meaningful after an artist's first deploy.
         uint256 lastTs = lastProjectTimestamp[artist];
         if (lastTs != 0) {
@@ -180,7 +189,7 @@ contract PDFactory {
         }
 
         // ── Effects/Interactions: deploy splitter then Project ──
-        PaymentSplitter splitter = new PaymentSplitter(artist, platformWallet);
+        PaymentSplitter splitter = new PaymentSplitter(artist, address(this));
 
         PDProject proj = new PDProject(
             name,
@@ -249,6 +258,21 @@ contract PDFactory {
         if (newWriter == address(0)) revert ZeroAddress();
         emit StorageFeeWriterUpdated(storageFeeWriter, newWriter);
         storageFeeWriter = newWriter;
+    }
+
+    // ─── Internal Helpers ────────────────────────────────────────────────
+
+    /// @dev Reject any byte that would break the on-chain tokenURI JSON.
+    ///      Disallowed: control bytes 0x00-0x1F, DEL 0x7F, double-quote 0x22,
+    ///      backslash 0x5C. UTF-8 multibyte characters (>= 0x80) are permitted
+    ///      and pass through verbatim into the JSON string.
+    function _assertJsonSafe(bytes memory data) private pure {
+        uint256 len = data.length;
+        for (uint256 i; i < len;) {
+            uint8 b = uint8(data[i]);
+            if (b < 0x20 || b == 0x22 || b == 0x5C || b == 0x7F) revert InvalidCharacter();
+            unchecked { ++i; }
+        }
     }
 
     // ─── View Functions ──────────────────────────────────────────────────
