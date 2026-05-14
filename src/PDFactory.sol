@@ -9,10 +9,20 @@ import {PaymentSplitter} from "./PaymentSplitter.sol";
 ///         art minting platform on Ethereum mainnet.
 ///
 ///         Deploys PDProject + PaymentSplitter pairs per artist drop.
-///         Maintains the artist whitelist, enforces the 60-day cooldown,
-///         and handles platform fee withdrawal.
+///         Maintains the artist whitelist, enforces the 60-day cooldown.
 ///
-///         Immutable logic. Admin is a single address, transferable for multisig.
+///         Admin scope is intentionally narrow:
+///           - whitelist artists (curation)
+///           - rotate platform / storage-fee wallets
+///           - rotate storage-fee writer (Arweave listener key)
+///           - transfer admin (multisig migration)
+///
+///         Admin has ZERO reach into deployed PDProject metadata behavior
+///         (no setBaseTokenURI exists anywhere) and ZERO contract-held funds
+///         to sweep — every mint pushes all three fee shares live to their
+///         destination wallets in the mint transaction itself.
+///
+///         Immutable per-project contracts. No pause. No upgrades.
 contract PDFactory {
     // ─── Constants ───────────────────────────────────────────────────────
 
@@ -22,17 +32,47 @@ contract PDFactory {
     /// @notice Maximum Outputs per Project.
     uint256 public constant MAX_SUPPLY_CAP = 10_000;
 
-    // ─── State ───────────────────────────────────────────────────────────
+    // ─── Immutable Oracle Wiring ─────────────────────────────────────────
+
+    /// @notice Chainlink ETH/USD price feed (mainnet: 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419).
+    ///         Locked at deploy time — cannot be rotated.
+    address public immutable chainlinkFeed;
+
+    /// @notice Uniswap V3 WETH/USDC 0.05% pool used as TWAP fallback
+    ///         (mainnet: 0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640).
+    ///         Locked at deploy time — cannot be rotated.
+    address public immutable uniswapV3Pool;
+
+    /// @notice WETH token address used as the base of the TWAP quote
+    ///         (mainnet: 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2).
+    ///         Parameterized rather than constant so the same bytecode deploys
+    ///         on testnet against mock tokens.
+    address public immutable weth;
+
+    /// @notice USDC token address used as the quote of the TWAP quote
+    ///         (mainnet: 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48).
+    address public immutable usdc;
+
+    // ─── Mutable Admin / Wallet State ────────────────────────────────────
 
     /// @notice Platform admin. Transferable for multisig migration.
     address public admin;
 
-    /// @notice Platform wallet — receives primary fees + platform royalty share.
+    /// @notice Receives the 5% mint-price share on every mint, live.
+    ///         Must accept ETH cleanly (EOA or simple multisig with non-reverting receive).
     address public platformWallet;
 
-    /// @notice Base URI for token metadata. Projects delegate tokenURI() here.
-    ///         Updatable so metadata endpoint can migrate without redeploying Projects.
-    string public baseTokenURI;
+    /// @notice Receives the $2-equivalent storage fee on every mint, live.
+    ///         Must accept ETH cleanly (EOA or simple multisig with non-reverting receive).
+    address public storageFeeWallet;
+
+    /// @notice Off-chain Arweave listener key — the only address authorized to
+    ///         call setArweaveTxid() on PDProject contracts. Rotatable by admin
+    ///         (key rotation only — confers zero metadata mutability beyond
+    ///         the write-once Arweave txid binding per token).
+    address public storageFeeWriter;
+
+    // ─── Registry State ──────────────────────────────────────────────────
 
     mapping(address => bool) public whitelistedArtists;
     mapping(address => uint256) public lastProjectTimestamp;
@@ -51,9 +91,7 @@ contract PDFactory {
     error CooldownActive(uint256 availableAt);
     error MaxSupplyExceeded();
     error MaxSupplyZero();
-    error TransferFailed();
     error NoScriptData();
-    error InvalidRange();
 
     // ─── Events ──────────────────────────────────────────────────────────
 
@@ -70,9 +108,8 @@ contract PDFactory {
     event ArtistRemoved(address indexed artist);
     event AdminTransferred(address indexed oldAdmin, address indexed newAdmin);
     event PlatformWalletUpdated(address indexed oldWallet, address indexed newWallet);
-    event BaseTokenURIUpdated(string newURI);
-    event FeesWithdrawn(address indexed project, address indexed to, uint256 amount);
-    event BatchFeesWithdrawn(address indexed to, uint256 total, uint256 projectCount);
+    event StorageFeeWalletUpdated(address indexed oldWallet, address indexed newWallet);
+    event StorageFeeWriterUpdated(address indexed oldWriter, address indexed newWriter);
 
     // ─── Modifiers ───────────────────────────────────────────────────────
 
@@ -86,13 +123,32 @@ contract PDFactory {
     constructor(
         address _admin,
         address _platformWallet,
-        string memory _baseTokenURI
+        address _storageFeeWallet,
+        address _storageFeeWriter,
+        address _chainlinkFeed,
+        address _uniswapV3Pool,
+        address _weth,
+        address _usdc
     ) {
-        if (_admin == address(0) || _platformWallet == address(0))
-            revert ZeroAddress();
+        if (
+            _admin == address(0) ||
+            _platformWallet == address(0) ||
+            _storageFeeWallet == address(0) ||
+            _storageFeeWriter == address(0) ||
+            _chainlinkFeed == address(0) ||
+            _uniswapV3Pool == address(0) ||
+            _weth == address(0) ||
+            _usdc == address(0)
+        ) revert ZeroAddress();
+
         admin = _admin;
         platformWallet = _platformWallet;
-        baseTokenURI = _baseTokenURI;
+        storageFeeWallet = _storageFeeWallet;
+        storageFeeWriter = _storageFeeWriter;
+        chainlinkFeed = _chainlinkFeed;
+        uniswapV3Pool = _uniswapV3Pool;
+        weth = _weth;
+        usdc = _usdc;
     }
 
     // ─── Project Deployment ──────────────────────────────────────────────
@@ -105,7 +161,8 @@ contract PDFactory {
         string calldata symbol,
         uint256 maxSupply,
         uint256 mintPrice,
-        bytes[] calldata scriptChunks
+        bytes[] calldata scriptChunks,
+        string calldata description
     ) external returns (address project) {
         address artist = msg.sender;
 
@@ -116,8 +173,6 @@ contract PDFactory {
         if (scriptChunks.length == 0) revert NoScriptData();
 
         // Cooldown: only meaningful after an artist's first deploy.
-        // Explicit null check — works in all environments (including tests where
-        // block.timestamp can be small).
         uint256 lastTs = lastProjectTimestamp[artist];
         if (lastTs != 0) {
             uint256 availableAt = lastTs + COOLDOWN_PERIOD;
@@ -134,7 +189,8 @@ contract PDFactory {
             mintPrice,
             maxSupply,
             address(splitter),
-            scriptChunks
+            scriptChunks,
+            description
         );
 
         project = address(proj);
@@ -164,70 +220,9 @@ contract PDFactory {
 
     /// @notice Remove an artist. Does not affect already-deployed Projects.
     function removeArtist(address artist) external onlyAdmin {
-        if (artist == address(0)) revert ZeroAddress(); // consistency with whitelistArtist
+        if (artist == address(0)) revert ZeroAddress();
         whitelistedArtists[artist] = false;
         emit ArtistRemoved(artist);
-    }
-
-    // ─── Platform Fee Withdrawal ─────────────────────────────────────────
-
-    /// @notice Withdraw accumulated platform fees from a single Project.
-    ///         Uses balance delta (so pre-existing factory ETH isn't swept).
-    ///         PDProject.withdraw() is a no-op when balance is zero — so
-    ///         this function doesn't revert on already-swept Projects.
-    function withdrawFrom(address project) external onlyAdmin {
-        uint256 balanceBefore = address(this).balance;
-        PDProject(project).withdraw();
-        uint256 received = address(this).balance - balanceBefore;
-
-        if (received > 0) {
-            (bool success,) = platformWallet.call{value: received}("");
-            if (!success) revert TransferFailed();
-            emit FeesWithdrawn(project, platformWallet, received);
-        }
-    }
-
-    /// @notice Paginated batch withdraw — sweeps [start, end) from the projects array.
-    ///         Use this as the platform scales past the point where a full sweep
-    ///         would exceed block gas. Range is clamped to array length.
-    function batchWithdrawRange(uint256 start, uint256 end) external onlyAdmin {
-        uint256 len = projects.length;
-        if (end > len) end = len;
-        if (start >= end) revert InvalidRange();
-
-        uint256 balanceBefore = address(this).balance;
-
-        for (uint256 i = start; i < end;) {
-            // try/catch keeps this safe if a future Project ever misbehaves.
-            try PDProject(projects[i]).withdraw() {} catch {}
-            unchecked { ++i; }
-        }
-
-        uint256 received = address(this).balance - balanceBefore;
-        if (received > 0) {
-            (bool success,) = platformWallet.call{value: received}("");
-            if (!success) revert TransferFailed();
-            emit BatchFeesWithdrawn(platformWallet, received, end - start);
-        }
-    }
-
-    /// @notice Convenience sweep of every Project. Safe up to ~30-50 Projects
-    ///         before block gas becomes a concern; switch to batchWithdrawRange past that.
-    function batchWithdraw() external onlyAdmin {
-        uint256 balanceBefore = address(this).balance;
-        uint256 len = projects.length;
-
-        for (uint256 i; i < len;) {
-            try PDProject(projects[i]).withdraw() {} catch {}
-            unchecked { ++i; }
-        }
-
-        uint256 received = address(this).balance - balanceBefore;
-        if (received > 0) {
-            (bool success,) = platformWallet.call{value: received}("");
-            if (!success) revert TransferFailed();
-            emit BatchFeesWithdrawn(platformWallet, received, len);
-        }
     }
 
     // ─── Admin Management ────────────────────────────────────────────────
@@ -244,9 +239,16 @@ contract PDFactory {
         platformWallet = newWallet;
     }
 
-    function setBaseTokenURI(string calldata newURI) external onlyAdmin {
-        baseTokenURI = newURI;
-        emit BaseTokenURIUpdated(newURI);
+    function setStorageFeeWallet(address newWallet) external onlyAdmin {
+        if (newWallet == address(0)) revert ZeroAddress();
+        emit StorageFeeWalletUpdated(storageFeeWallet, newWallet);
+        storageFeeWallet = newWallet;
+    }
+
+    function setStorageFeeWriter(address newWriter) external onlyAdmin {
+        if (newWriter == address(0)) revert ZeroAddress();
+        emit StorageFeeWriterUpdated(storageFeeWriter, newWriter);
+        storageFeeWriter = newWriter;
     }
 
     // ─── View Functions ──────────────────────────────────────────────────
@@ -280,9 +282,4 @@ contract PDFactory {
         if (lastTs == 0) return true;
         return block.timestamp >= lastTs + COOLDOWN_PERIOD;
     }
-
-    // ─── Receive ─────────────────────────────────────────────────────────
-
-    /// @notice Accept ETH from Project withdrawals.
-    receive() external payable {}
 }
