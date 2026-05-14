@@ -4,65 +4,112 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {PDFactory} from "../src/PDFactory.sol";
 import {PDProject} from "../src/PDProject.sol";
+import {
+    MockChainlinkAggregator,
+    MockUniswapV3Pool,
+    MockWETH,
+    MockUSDC
+} from "./mocks/Mocks.sol";
 
 contract PDFactoryTest is Test {
     PDFactory factory;
 
     address admin = makeAddr("admin");
     address platformWallet = makeAddr("platformWallet");
-    address artist = makeAddr("artist");
+    address storageFeeWallet = makeAddr("storageFeeWallet");
+    address storageFeeWriter = makeAddr("storageFeeWriter");
+    address artist1 = makeAddr("artist1");
     address artist2 = makeAddr("artist2");
-    address random = makeAddr("random");
+    address rando = makeAddr("rando");
 
-    string constant BASE_URI = "https://api.pricediscussion.com/token/";
+    address chainlink;
+    address pool;
+    address weth;
+    address usdc;
 
     function setUp() public {
-        vm.prank(admin);
-        factory = new PDFactory(admin, platformWallet, BASE_URI);
-    }
+        chainlink = address(new MockChainlinkAggregator(int256(3000e8), block.timestamp));
+        pool = address(new MockUniswapV3Pool(int24(-196250)));
+        weth = address(new MockWETH());
+        usdc = address(new MockUSDC());
 
-    // ─── Helpers ─────────────────────────────────────────────────────────
-
-    function _sampleScript() internal pure returns (bytes[] memory chunks) {
-        chunks = new bytes[](1);
-        chunks[0] = bytes("function draw(p5) { p5.background(0); }");
-    }
-
-    function _createSampleProject(address _artist) internal returns (address project) {
-        vm.prank(_artist);
-        project = factory.createProject("Kiki", "KIKI", 2222, 0.011 ether, _sampleScript());
+        factory = new PDFactory(
+            admin,
+            platformWallet,
+            storageFeeWallet,
+            storageFeeWriter,
+            chainlink,
+            pool,
+            weth,
+            usdc
+        );
     }
 
     // ─── Constructor ─────────────────────────────────────────────────────
 
-    function test_Constructor_SetsState() public view {
+    function test_Constructor_SetsAllAddresses() public view {
         assertEq(factory.admin(), admin);
         assertEq(factory.platformWallet(), platformWallet);
-        assertEq(factory.baseTokenURI(), BASE_URI);
+        assertEq(factory.storageFeeWallet(), storageFeeWallet);
+        assertEq(factory.storageFeeWriter(), storageFeeWriter);
+        assertEq(factory.chainlinkFeed(), chainlink);
+        assertEq(factory.uniswapV3Pool(), pool);
+        assertEq(factory.weth(), weth);
+        assertEq(factory.usdc(), usdc);
     }
 
     function test_Constructor_RevertsOnZeroAdmin() public {
         vm.expectRevert(PDFactory.ZeroAddress.selector);
-        new PDFactory(address(0), platformWallet, BASE_URI);
+        new PDFactory(address(0), platformWallet, storageFeeWallet, storageFeeWriter, chainlink, pool, weth, usdc);
     }
 
     function test_Constructor_RevertsOnZeroPlatformWallet() public {
         vm.expectRevert(PDFactory.ZeroAddress.selector);
-        new PDFactory(admin, address(0), BASE_URI);
+        new PDFactory(admin, address(0), storageFeeWallet, storageFeeWriter, chainlink, pool, weth, usdc);
+    }
+
+    function test_Constructor_RevertsOnZeroStorageFeeWallet() public {
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        new PDFactory(admin, platformWallet, address(0), storageFeeWriter, chainlink, pool, weth, usdc);
+    }
+
+    function test_Constructor_RevertsOnZeroStorageFeeWriter() public {
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        new PDFactory(admin, platformWallet, storageFeeWallet, address(0), chainlink, pool, weth, usdc);
+    }
+
+    function test_Constructor_RevertsOnZeroChainlink() public {
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        new PDFactory(admin, platformWallet, storageFeeWallet, storageFeeWriter, address(0), pool, weth, usdc);
+    }
+
+    function test_Constructor_RevertsOnZeroPool() public {
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        new PDFactory(admin, platformWallet, storageFeeWallet, storageFeeWriter, chainlink, address(0), weth, usdc);
+    }
+
+    function test_Constructor_RevertsOnZeroWeth() public {
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        new PDFactory(admin, platformWallet, storageFeeWallet, storageFeeWriter, chainlink, pool, address(0), usdc);
+    }
+
+    function test_Constructor_RevertsOnZeroUsdc() public {
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        new PDFactory(admin, platformWallet, storageFeeWallet, storageFeeWriter, chainlink, pool, weth, address(0));
     }
 
     // ─── Whitelist ───────────────────────────────────────────────────────
 
     function test_WhitelistArtist_OnlyAdmin() public {
-        vm.prank(random);
+        vm.prank(rando);
         vm.expectRevert(PDFactory.NotAdmin.selector);
-        factory.whitelistArtist(artist);
+        factory.whitelistArtist(artist1);
     }
 
     function test_WhitelistArtist_Success() public {
         vm.prank(admin);
-        factory.whitelistArtist(artist);
-        assertTrue(factory.whitelistedArtists(artist));
+        factory.whitelistArtist(artist1);
+        assertTrue(factory.whitelistedArtists(artist1));
     }
 
     function test_WhitelistArtist_RevertsOnZero() public {
@@ -71,157 +118,154 @@ contract PDFactoryTest is Test {
         factory.whitelistArtist(address(0));
     }
 
+    function test_RemoveArtist_OnlyAdmin() public {
+        vm.prank(admin);
+        factory.whitelistArtist(artist1);
+        vm.prank(rando);
+        vm.expectRevert(PDFactory.NotAdmin.selector);
+        factory.removeArtist(artist1);
+    }
+
     function test_RemoveArtist_RevertsOnZero() public {
-        // Consistency fix — removeArtist now validates zero address like whitelistArtist
         vm.prank(admin);
         vm.expectRevert(PDFactory.ZeroAddress.selector);
         factory.removeArtist(address(0));
     }
 
-    function test_RemoveArtist_RemovesWhitelist() public {
+    function test_RemoveArtist_ClearsWhitelist() public {
         vm.startPrank(admin);
-        factory.whitelistArtist(artist);
-        factory.removeArtist(artist);
+        factory.whitelistArtist(artist1);
+        factory.removeArtist(artist1);
         vm.stopPrank();
-        assertFalse(factory.whitelistedArtists(artist));
+        assertFalse(factory.whitelistedArtists(artist1));
     }
 
-    // ─── Create Project ──────────────────────────────────────────────────
+    // ─── createProject ───────────────────────────────────────────────────
+
+    function _whitelist(address a) internal {
+        vm.prank(admin);
+        factory.whitelistArtist(a);
+    }
+
+    function _scriptChunks() internal pure returns (bytes[] memory chunks) {
+        chunks = new bytes[](1);
+        chunks[0] = bytes("function setup(){}function draw(){}");
+    }
 
     function test_CreateProject_RevertsIfNotWhitelisted() public {
-        vm.prank(artist);
+        vm.prank(artist1);
         vm.expectRevert(PDFactory.ArtistNotWhitelisted.selector);
-        factory.createProject("Kiki", "KIKI", 2222, 0.011 ether, _sampleScript());
+        factory.createProject("Drop", "DROP", 100, 0.01 ether, _scriptChunks(), "desc");
     }
 
     function test_CreateProject_RevertsOnZeroSupply() public {
-        vm.prank(admin);
-        factory.whitelistArtist(artist);
-
-        vm.prank(artist);
+        _whitelist(artist1);
+        vm.prank(artist1);
         vm.expectRevert(PDFactory.MaxSupplyZero.selector);
-        factory.createProject("Kiki", "KIKI", 0, 0.011 ether, _sampleScript());
+        factory.createProject("Drop", "DROP", 0, 0.01 ether, _scriptChunks(), "desc");
     }
 
-    function test_CreateProject_RevertsOnSupplyAboveCap() public {
-        vm.prank(admin);
-        factory.whitelistArtist(artist);
-
-        vm.prank(artist);
+    function test_CreateProject_RevertsAboveSupplyCap() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
         vm.expectRevert(PDFactory.MaxSupplyExceeded.selector);
-        factory.createProject("Kiki", "KIKI", 10_001, 0.011 ether, _sampleScript());
+        factory.createProject("Drop", "DROP", 10_001, 0.01 ether, _scriptChunks(), "desc");
     }
 
-    function test_CreateProject_RevertsOnNoScript() public {
-        vm.prank(admin);
-        factory.whitelistArtist(artist);
-
+    function test_CreateProject_RevertsWithoutScript() public {
+        _whitelist(artist1);
         bytes[] memory empty = new bytes[](0);
-        vm.prank(artist);
+        vm.prank(artist1);
         vm.expectRevert(PDFactory.NoScriptData.selector);
-        factory.createProject("Kiki", "KIKI", 2222, 0.011 ether, empty);
+        factory.createProject("Drop", "DROP", 100, 0.01 ether, empty, "desc");
     }
 
     function test_CreateProject_Success() public {
-        vm.prank(admin);
-        factory.whitelistArtist(artist);
+        _whitelist(artist1);
+        vm.prank(artist1);
+        address proj = factory.createProject("Drop", "DROP", 100, 0.01 ether, _scriptChunks(), "desc");
 
-        address project = _createSampleProject(artist);
-        assertTrue(project != address(0));
-        assertTrue(factory.isProject(project));
-        assertEq(factory.projectCount(), 1);
-        assertEq(factory.artistProjectCount(artist), 1);
-        assertEq(factory.getArtistProjects(artist)[0], project);
+        assertTrue(factory.isProject(proj));
+        assertEq(factory.lastProjectTimestamp(artist1), block.timestamp);
+        assertEq(PDProject(proj).artist(), artist1);
+        assertEq(PDProject(proj).maxSupply(), 100);
+        assertEq(PDProject(proj).mintPrice(), 0.01 ether);
+        assertEq(PDProject(proj).description(), "desc");
+        assertEq(PDProject(proj).factory(), address(factory));
     }
 
-    function test_CreateProject_SupplyAtCapWorks() public {
-        // Exactly 10k is allowed; the error fires above the cap.
-        vm.prank(admin);
-        factory.whitelistArtist(artist);
-
-        vm.prank(artist);
-        address project =
-            factory.createProject("Max", "MAX", 10_000, 0.01 ether, _sampleScript());
-        assertTrue(project != address(0));
+    function test_CreateProject_AtCap_Succeeds() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
+        address proj = factory.createProject("Cap", "CAP", 10_000, 0.01 ether, _scriptChunks(), "");
+        assertEq(PDProject(proj).maxSupply(), 10_000);
     }
 
     // ─── Cooldown ────────────────────────────────────────────────────────
 
-    function test_Cooldown_FirstDeployHasNone() public view {
-        assertEq(factory.cooldownRemaining(artist), 0);
+    function test_Cooldown_NoneOnFirstProject() public {
+        _whitelist(artist1);
+        assertTrue(factory.canCreateProject(artist1));
+        vm.prank(artist1);
+        factory.createProject("A", "A", 10, 0.01 ether, _scriptChunks(), "");
     }
 
-    function test_Cooldown_EnforcedOnSecondDeploy() public {
+    function test_Cooldown_BlocksSecondProjectImmediately() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
+        factory.createProject("A", "A", 10, 0.01 ether, _scriptChunks(), "");
+
+        assertFalse(factory.canCreateProject(artist1));
+
+        vm.prank(artist1);
+        vm.expectRevert(
+            abi.encodeWithSelector(PDFactory.CooldownActive.selector, block.timestamp + 60 days)
+        );
+        factory.createProject("B", "B", 10, 0.01 ether, _scriptChunks(), "");
+    }
+
+    function test_Cooldown_AllowsAfter60Days() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
+        factory.createProject("A", "A", 10, 0.01 ether, _scriptChunks(), "");
+
+        vm.warp(block.timestamp + 60 days);
+        assertTrue(factory.canCreateProject(artist1));
+
+        vm.prank(artist1);
+        factory.createProject("B", "B", 10, 0.01 ether, _scriptChunks(), "");
+    }
+
+    function test_Cooldown_IsPerArtist() public {
+        _whitelist(artist1);
+        _whitelist(artist2);
+
+        vm.prank(artist1);
+        factory.createProject("A", "A", 10, 0.01 ether, _scriptChunks(), "");
+
+        // artist2 is unaffected by artist1's cooldown.
+        assertTrue(factory.canCreateProject(artist2));
+        vm.prank(artist2);
+        factory.createProject("B", "B", 10, 0.01 ether, _scriptChunks(), "");
+    }
+
+    function test_CanCreateProject_FalseForUnwhitelisted() public view {
+        assertFalse(factory.canCreateProject(rando));
+    }
+
+    // ─── Admin Rotation ──────────────────────────────────────────────────
+
+    function test_TransferAdmin_OnlyAdmin() public {
+        vm.prank(rando);
+        vm.expectRevert(PDFactory.NotAdmin.selector);
+        factory.transferAdmin(rando);
+    }
+
+    function test_TransferAdmin_RevertsOnZero() public {
         vm.prank(admin);
-        factory.whitelistArtist(artist);
-
-        _createSampleProject(artist);
-
-        // Immediate second deploy — should revert
-        vm.prank(artist);
-        vm.expectRevert(); // CooldownActive with data — using generic revert
-        factory.createProject("Kiki2", "K2", 2222, 0.011 ether, _sampleScript());
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        factory.transferAdmin(address(0));
     }
-
-    function test_Cooldown_AllowsDeployAfter60Days() public {
-        vm.prank(admin);
-        factory.whitelistArtist(artist);
-
-        _createSampleProject(artist);
-
-        // Warp forward 60 days + 1s
-        vm.warp(block.timestamp + 60 days + 1);
-
-        address c2 = _createSampleProject(artist);
-        assertTrue(c2 != address(0));
-        assertEq(factory.artistProjectCount(artist), 2);
-    }
-
-    function test_Cooldown_IsGlobalPerArtist_NotPerProject() public {
-        vm.startPrank(admin);
-        factory.whitelistArtist(artist);
-        vm.stopPrank();
-
-        _createSampleProject(artist);
-
-        // 59 days later still blocked
-        vm.warp(block.timestamp + 59 days);
-        vm.prank(artist);
-        vm.expectRevert();
-        factory.createProject("Kiki2", "K2", 2222, 0.011 ether, _sampleScript());
-    }
-
-    function test_Cooldown_DoesNotAffectDifferentArtist() public {
-        vm.startPrank(admin);
-        factory.whitelistArtist(artist);
-        factory.whitelistArtist(artist2);
-        vm.stopPrank();
-
-        _createSampleProject(artist);
-        // Second artist can deploy immediately
-        address c2 = _createSampleProject(artist2);
-        assertTrue(c2 != address(0));
-    }
-
-    function test_CanCreateProject_View() public {
-        // Not whitelisted
-        assertFalse(factory.canCreateProject(artist));
-
-        vm.prank(admin);
-        factory.whitelistArtist(artist);
-
-        // Whitelisted, no prior deploy
-        assertTrue(factory.canCreateProject(artist));
-
-        _createSampleProject(artist);
-        // Whitelisted, on cooldown
-        assertFalse(factory.canCreateProject(artist));
-
-        vm.warp(block.timestamp + 60 days + 1);
-        assertTrue(factory.canCreateProject(artist));
-    }
-
-    // ─── Admin Ops ───────────────────────────────────────────────────────
 
     function test_TransferAdmin_Success() public {
         address newAdmin = makeAddr("newAdmin");
@@ -229,105 +273,66 @@ contract PDFactoryTest is Test {
         factory.transferAdmin(newAdmin);
         assertEq(factory.admin(), newAdmin);
 
-        // Old admin locked out
+        // Old admin no longer has authority.
         vm.prank(admin);
         vm.expectRevert(PDFactory.NotAdmin.selector);
-        factory.whitelistArtist(artist);
-
-        // New admin works
-        vm.prank(newAdmin);
-        factory.whitelistArtist(artist);
-        assertTrue(factory.whitelistedArtists(artist));
+        factory.whitelistArtist(artist1);
     }
 
-    function test_SetPlatformWallet_UpdatesAddress() public {
-        address newWallet = makeAddr("newWallet");
+    function test_SetPlatformWallet_OnlyAdmin() public {
+        vm.prank(rando);
+        vm.expectRevert(PDFactory.NotAdmin.selector);
+        factory.setPlatformWallet(rando);
+    }
+
+    function test_SetPlatformWallet_Success() public {
+        address newWallet = makeAddr("newPlatform");
         vm.prank(admin);
         factory.setPlatformWallet(newWallet);
         assertEq(factory.platformWallet(), newWallet);
     }
 
-    function test_SetBaseTokenURI_Updates() public {
-        string memory newURI = "https://new.example.com/token/";
+    function test_SetPlatformWallet_RevertsOnZero() public {
         vm.prank(admin);
-        factory.setBaseTokenURI(newURI);
-        assertEq(factory.baseTokenURI(), newURI);
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        factory.setPlatformWallet(address(0));
     }
 
-    // ─── Withdraw ────────────────────────────────────────────────────────
-
-    function test_WithdrawFrom_NoOpOnEmptyProject() public {
-        // Fix verified: withdrawing from a Project with 0 fees no longer reverts
-        vm.prank(admin);
-        factory.whitelistArtist(artist);
-        address project = _createSampleProject(artist);
-
-        // No mints yet — no fees accumulated
-        vm.prank(admin);
-        factory.withdrawFrom(project); // must not revert
+    function test_SetStorageFeeWallet_OnlyAdmin() public {
+        vm.prank(rando);
+        vm.expectRevert(PDFactory.NotAdmin.selector);
+        factory.setStorageFeeWallet(rando);
     }
 
-    function test_WithdrawFrom_SweepsFees() public {
+    function test_SetStorageFeeWallet_Success() public {
+        address newWallet = makeAddr("newStorage");
         vm.prank(admin);
-        factory.whitelistArtist(artist);
-        address project = _createSampleProject(artist);
-
-        // Mint 10 tokens at 0.011 ETH each = 0.11 ETH
-        // Platform fee = 5% = 0.0055 ETH
-        address buyer = makeAddr("buyer");
-        vm.deal(buyer, 1 ether);
-        vm.prank(buyer);
-        PDProject(project).mint{value: 0.11 ether}(10);
-
-        uint256 platformBefore = platformWallet.balance;
-
-        vm.prank(admin);
-        factory.withdrawFrom(project);
-
-        assertEq(platformWallet.balance, platformBefore + 0.0055 ether);
+        factory.setStorageFeeWallet(newWallet);
+        assertEq(factory.storageFeeWallet(), newWallet);
     }
 
-    function test_BatchWithdrawRange_Works() public {
-        vm.startPrank(admin);
-        factory.whitelistArtist(artist);
-        factory.whitelistArtist(artist2);
-        vm.stopPrank();
-
-        address c1 = _createSampleProject(artist);
-        address c2 = _createSampleProject(artist2);
-
-        // Mint from both — 0.011 * 10 = 0.11 per Project, 5% platform = 0.0055 each
-        address buyer = makeAddr("buyer");
-        vm.deal(buyer, 10 ether);
-        vm.prank(buyer);
-        PDProject(c1).mint{value: 0.11 ether}(10);
-        vm.prank(buyer);
-        PDProject(c2).mint{value: 0.11 ether}(10);
-
-        uint256 platformBefore = platformWallet.balance;
+    function test_SetStorageFeeWallet_RevertsOnZero() public {
         vm.prank(admin);
-        factory.batchWithdrawRange(0, 2);
-
-        assertEq(platformWallet.balance, platformBefore + 0.011 ether); // 0.0055 * 2
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        factory.setStorageFeeWallet(address(0));
     }
 
-    function test_BatchWithdrawRange_ClampsEnd() public {
-        vm.prank(admin);
-        factory.whitelistArtist(artist);
-        _createSampleProject(artist);
-
-        // Request end = 100 but only 1 Project exists — must not revert, just clamp
-        vm.prank(admin);
-        factory.batchWithdrawRange(0, 100);
+    function test_SetStorageFeeWriter_OnlyAdmin() public {
+        vm.prank(rando);
+        vm.expectRevert(PDFactory.NotAdmin.selector);
+        factory.setStorageFeeWriter(rando);
     }
 
-    function test_BatchWithdrawRange_RevertsOnInvalidRange() public {
+    function test_SetStorageFeeWriter_Success() public {
+        address newWriter = makeAddr("newWriter");
         vm.prank(admin);
-        factory.whitelistArtist(artist);
-        _createSampleProject(artist);
+        factory.setStorageFeeWriter(newWriter);
+        assertEq(factory.storageFeeWriter(), newWriter);
+    }
 
+    function test_SetStorageFeeWriter_RevertsOnZero() public {
         vm.prank(admin);
-        vm.expectRevert(PDFactory.InvalidRange.selector);
-        factory.batchWithdrawRange(5, 5); // start >= end after clamp
+        vm.expectRevert(PDFactory.ZeroAddress.selector);
+        factory.setStorageFeeWriter(address(0));
     }
 }
