@@ -180,6 +180,99 @@ contract PDFactoryTest is Test {
         factory.createProject("Drop", "DROP", 100, 0.01 ether, empty, "desc");
     }
 
+    // ─── createProject: JSON-character validation ────────────────────────
+
+    function test_CreateProject_RevertsOnQuoteInName() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
+        vm.expectRevert(PDFactory.InvalidCharacter.selector);
+        factory.createProject('Bad"Name', "DROP", 100, 0.01 ether, _scriptChunks(), "ok");
+    }
+
+    function test_CreateProject_RevertsOnBackslashInName() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
+        vm.expectRevert(PDFactory.InvalidCharacter.selector);
+        // Solidity string literal: "Bad\\Name" embeds a single backslash byte.
+        factory.createProject("Bad\\Name", "DROP", 100, 0.01 ether, _scriptChunks(), "ok");
+    }
+
+    function test_CreateProject_RevertsOnNewlineInName() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
+        vm.expectRevert(PDFactory.InvalidCharacter.selector);
+        factory.createProject("Bad\nName", "DROP", 100, 0.01 ether, _scriptChunks(), "ok");
+    }
+
+    function test_CreateProject_RevertsOnNullByteInName() public {
+        _whitelist(artist1);
+        // Construct a name with a 0x00 byte.
+        bytes memory raw = bytes("BadName");
+        raw[3] = 0x00;
+        string memory bad = string(raw);
+        vm.prank(artist1);
+        vm.expectRevert(PDFactory.InvalidCharacter.selector);
+        factory.createProject(bad, "DROP", 100, 0.01 ether, _scriptChunks(), "ok");
+    }
+
+    function test_CreateProject_RevertsOnDelByteInName() public {
+        _whitelist(artist1);
+        // Construct a name with a 0x7F (DEL) byte.
+        bytes memory raw = bytes("BadName");
+        raw[3] = 0x7F;
+        string memory bad = string(raw);
+        vm.prank(artist1);
+        vm.expectRevert(PDFactory.InvalidCharacter.selector);
+        factory.createProject(bad, "DROP", 100, 0.01 ether, _scriptChunks(), "ok");
+    }
+
+    function test_CreateProject_RevertsOnQuoteInDescription() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
+        vm.expectRevert(PDFactory.InvalidCharacter.selector);
+        factory.createProject("Drop", "DROP", 100, 0.01 ether, _scriptChunks(), 'has "quote"');
+    }
+
+    function test_CreateProject_RevertsOnBackslashInDescription() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
+        vm.expectRevert(PDFactory.InvalidCharacter.selector);
+        factory.createProject("Drop", "DROP", 100, 0.01 ether, _scriptChunks(), "back\\slash");
+    }
+
+    function test_CreateProject_RevertsOnControlByteInDescription() public {
+        _whitelist(artist1);
+        bytes memory raw = bytes("multi line");
+        raw[5] = 0x09; // TAB
+        string memory bad = string(raw);
+        vm.prank(artist1);
+        vm.expectRevert(PDFactory.InvalidCharacter.selector);
+        factory.createProject("Drop", "DROP", 100, 0.01 ether, _scriptChunks(), bad);
+    }
+
+    function test_CreateProject_AcceptsUtf8Multibyte() public {
+        // UTF-8 multibyte characters (>= 0x80) must pass through validation.
+        // "naïve — café" exercises 0xC3 0xAF (ï), 0xE2 0x80 0x94 (—), 0xC3 0xA9 (é).
+        _whitelist(artist1);
+        vm.prank(artist1);
+        address proj = factory.createProject(
+            unicode"Naïve",
+            "DROP",
+            100,
+            0.01 ether,
+            _scriptChunks(),
+            unicode"café — drop"
+        );
+        assertTrue(factory.isProject(proj));
+    }
+
+    function test_CreateProject_AcceptsEmptyDescription() public {
+        _whitelist(artist1);
+        vm.prank(artist1);
+        address proj = factory.createProject("Drop", "DROP", 100, 0.01 ether, _scriptChunks(), "");
+        assertTrue(factory.isProject(proj));
+    }
+
     function test_CreateProject_Success() public {
         _whitelist(artist1);
         vm.prank(artist1);

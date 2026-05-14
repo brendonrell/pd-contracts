@@ -4,26 +4,54 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {PaymentSplitter} from "../src/PaymentSplitter.sol";
 
+/// @dev Minimal factory mock that satisfies PaymentSplitter's IPDFactory
+///      interface. Exposes a settable `platformWallet` so the splitter test
+///      can exercise the live-lookup rotation behavior in isolation.
+contract MockFactoryWallet {
+    address public platformWallet;
+
+    constructor(address initial) {
+        platformWallet = initial;
+    }
+
+    function setPlatformWallet(address w) external {
+        platformWallet = w;
+    }
+}
+
 contract PaymentSplitterTest is Test {
     PaymentSplitter splitter;
+    MockFactoryWallet factoryMock;
+
     address artist = makeAddr("artist");
     address platform = makeAddr("platform");
 
     function setUp() public {
-        splitter = new PaymentSplitter(artist, platform);
+        factoryMock = new MockFactoryWallet(platform);
+        splitter = new PaymentSplitter(artist, address(factoryMock));
     }
 
-    function test_Constructor_SetsAddresses() public view {
+    function test_Constructor_SetsImmutables() public view {
         assertEq(splitter.artist(), artist);
+        assertEq(splitter.factory(), address(factoryMock));
+    }
+
+    function test_Platform_ReadsFromFactoryLive() public {
+        // Initial value follows the factory.
         assertEq(splitter.platform(), platform);
+
+        // Rotate on the factory side; splitter view follows instantly.
+        address rotated = makeAddr("rotatedPlatform");
+        factoryMock.setPlatformWallet(rotated);
+        assertEq(splitter.platform(), rotated);
     }
 
     function test_Constructor_RevertsOnZeroArtist() public {
         vm.expectRevert(PaymentSplitter.ZeroAddress.selector);
-        new PaymentSplitter(address(0), platform);
+        new PaymentSplitter(address(0), address(factoryMock));
     }
 
-    function test_Constructor_RevertsOnZeroPlatform() public {
+    function test_Constructor_RevertsOnZeroFactory() public {
         vm.expectRevert(PaymentSplitter.ZeroAddress.selector);
         new PaymentSplitter(artist, address(0));
     }
@@ -65,13 +93,37 @@ contract PaymentSplitterTest is Test {
         assertEq(splitter.artistBalance(), 0);
     }
 
-    function test_WithdrawPlatform_SendsToPlatform() public {
+    function test_WithdrawPlatform_SendsToCurrentPlatformWallet() public {
         (bool ok,) = address(splitter).call{value: 1 ether}("");
         assertTrue(ok);
 
         uint256 balanceBefore = platform.balance;
         splitter.withdrawPlatform();
         assertEq(platform.balance, balanceBefore + 0.4 ether);
+        assertEq(splitter.platformBalance(), 0);
+    }
+
+    /// @notice Rotation symmetry: royalties received under the original
+    ///         platform wallet but withdrawn after rotation flow to the
+    ///         NEW wallet — matching the primary-fee live-lookup pattern.
+    function test_WithdrawPlatform_RoutesToRotatedWallet() public {
+        // Royalty arrives under the original platform wallet.
+        (bool ok,) = address(splitter).call{value: 1 ether}("");
+        assertTrue(ok);
+        assertEq(splitter.platformBalance(), 0.4 ether);
+
+        // Factory rotates the platform wallet.
+        address rotated = makeAddr("rotatedPlatform");
+        factoryMock.setPlatformWallet(rotated);
+
+        uint256 oldBefore = platform.balance;
+        uint256 newBefore = rotated.balance;
+
+        splitter.withdrawPlatform();
+
+        // Old wallet sees nothing; new wallet receives the accumulated share.
+        assertEq(platform.balance, oldBefore, "rotated-out wallet must not receive");
+        assertEq(rotated.balance - newBefore, 0.4 ether);
         assertEq(splitter.platformBalance(), 0);
     }
 
@@ -94,5 +146,16 @@ contract PaymentSplitterTest is Test {
         vm.prank(random);
         splitter.withdrawArtist();
         assertEq(artist.balance, 0.6 ether);
+    }
+
+    function test_WithdrawPlatform_CallableByAnyone() public {
+        // Funds only flow to factory's current platform wallet — no access control needed
+        (bool ok,) = address(splitter).call{value: 1 ether}("");
+        assertTrue(ok);
+
+        address random = makeAddr("random");
+        vm.prank(random);
+        splitter.withdrawPlatform();
+        assertEq(platform.balance, 0.4 ether);
     }
 }

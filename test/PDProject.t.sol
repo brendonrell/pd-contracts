@@ -235,9 +235,14 @@ contract PDProjectTest is Test {
     }
 
     function test_Mint_RevertsOnMaxSupplyExceeded() public {
-        // Mint full supply first.
+        // Mint full supply first, in batches that respect MAX_MINT_PER_TX.
+        uint256 q = 22;
+        for (uint256 i; i < 4; i++) {
+            vm.prank(minter);
+            project.mint{value: _required(q)}(q);
+        }
         vm.prank(minter);
-        project.mint{value: _required(MAX_SUPPLY)}(MAX_SUPPLY);
+        project.mint{value: _required(12)}(12);
         assertEq(project.totalMinted(), MAX_SUPPLY);
 
         // One more should revert.
@@ -247,14 +252,48 @@ contract PDProjectTest is Test {
     }
 
     function test_Mint_RevertsWhenQuantityWouldExceedSupply() public {
-        // Mint MAX_SUPPLY - 1, then try to mint 2.
-        uint256 nearly = MAX_SUPPLY - 1;
+        // Mint up to MAX_SUPPLY - 1 in batches, then try a 2-token mint.
+        uint256 q = 22;
+        for (uint256 i; i < 4; i++) {
+            vm.prank(minter);
+            project.mint{value: _required(q)}(q);
+        }
+        // 88 minted so far → 11 more brings us to 99 (one short of MAX_SUPPLY).
         vm.prank(minter);
-        project.mint{value: _required(nearly)}(nearly);
+        project.mint{value: _required(11)}(11);
+        assertEq(project.totalMinted(), MAX_SUPPLY - 1);
 
         vm.prank(minter);
         vm.expectRevert(PDProject.MaxSupplyReached.selector);
         project.mint{value: _required(2)}(2);
+    }
+
+    // ─── Mint: Per-Tx Cap ────────────────────────────────────────────────
+
+    function test_MaxMintPerTx_Is22() public view {
+        assertEq(project.MAX_MINT_PER_TX(), 22);
+    }
+
+    function test_Mint_AtTxCap_Succeeds() public {
+        uint256 q = 22;
+        vm.prank(minter);
+        project.mint{value: _required(q)}(q);
+        assertEq(project.totalMinted(), q);
+    }
+
+    function test_Mint_RevertsAboveTxCap() public {
+        uint256 q = 23;
+        vm.prank(minter);
+        vm.expectRevert(PDProject.QuantityExceedsTxCap.selector);
+        project.mint{value: _required(q)}(q);
+    }
+
+    function test_Mint_TxCapAppliesEvenWithCapacityRemaining() public {
+        // Supply is 100 — well above the per-tx cap. Confirm the per-tx cap
+        // is still enforced rather than silently allowing larger batches.
+        vm.prank(minter);
+        vm.expectRevert(PDProject.QuantityExceedsTxCap.selector);
+        project.mint{value: _required(50)}(50);
     }
 
     // ─── setArweaveTxid ──────────────────────────────────────────────────
